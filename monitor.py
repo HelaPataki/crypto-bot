@@ -13,7 +13,7 @@ OI_MIN, OI_MAX = 3.0, 12.0
 
 CZ = "https://api.coinalyze.net/v1"
 SPOT = "https://data-api.binance.vision"
-PAUSE = 1.6  # лимит Coinalyze: 40 запросов в минуту
+PAUSE = 2.0  # лимит Coinalyze: 40 запросов в минуту (берём с запасом)
 STATE_FILE = "state.json"
 
 
@@ -57,7 +57,11 @@ def cz(path, **params):
             CZ + path, params=params, headers={"api_key": KEY}, timeout=30
         )
         if r.status_code == 429:
-            time.sleep(int(r.headers.get("Retry-After", "30")) + 1)
+            try:
+                wait = float(r.headers.get("Retry-After", "30"))
+            except ValueError:
+                wait = 30
+            time.sleep(wait + 1)
             continue
         if r.status_code != 200:
             raise RuntimeError(f"Coinalyze {path} -> {r.status_code}: {r.text[:150]}")
