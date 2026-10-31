@@ -80,7 +80,6 @@ def check_binance_futures():
         except Exception:
             continue
 
-    # Временный отчет о проверке
     send_telegram(f"🟢 **Бот успешно отработал!**\nПроверено монет: `{symbols_checked}`\nНайдено сигналов: `{signals_count}`")
 
 if __name__ == "__main__":
