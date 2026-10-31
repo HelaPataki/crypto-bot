@@ -141,13 +141,17 @@ def spot_price_changes(bases):
                 break
     syms = list(pairs)
     out = {}
-    for i in range(0, len(syms), 100):
-        chunk = syms[i:i + 100]
-        data = get_json(
-            SPOT + "/api/v3/ticker",
-            symbols=json.dumps(chunk, separators=(",", ":")),
-            windowSize="4h",
-        )
+    for i in range(0, len(syms), 40):
+        chunk = syms[i:i + 40]
+        try:
+            data = get_json(
+                SPOT + "/api/v3/ticker",
+                symbols=json.dumps(chunk, separators=(",", ":")),
+                windowSize="4h",
+            )
+        except Exception as e:
+            print("порция цен не получена, эти монеты возьму у Coinalyze:", e)
+            continue
         for d in data:
             o, l = float(d["openPrice"]), float(d["lastPrice"])
             if o:
