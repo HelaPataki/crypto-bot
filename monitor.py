@@ -136,7 +136,7 @@ def spot_price_changes(bases):
     pairs = {}
     for b in bases:
         for cand in (b + "USDT", b.removeprefix("1000") + "USDT"):
-            if cand in valid:
+            if cand in valid and cand.isascii():
                 pairs[cand] = b
                 break
     syms = list(pairs)
@@ -175,9 +175,11 @@ def main():
 
     # 1) цена за 4ч
     price = {}
+    spot_ok = False
     try:
         by_base = spot_price_changes([b for _, b, _ in cands])
         price = {sym: by_base[b] for sym, b, _ in cands if b in by_base}
+        spot_ok = True
         print("цена: источник spot Binance, монет:", len(price))
     except Exception as e:
         print("spot не сработал, беру цену из Coinalyze:", e)
@@ -190,6 +192,19 @@ def main():
         except Exception as e2:
             tg(f"⚠️ Не удалось получить цены:\n{e2}")
             return
+
+    if spot_ok:
+        missing = [s for s, _, _ in cands if s not in price]
+        if missing:
+            print("нет цены по споту, беру из Coinalyze:", len(missing))
+            try:
+                hist = history("ohlcv-history", missing)
+                for s, h in hist.items():
+                    c = change(h)
+                    if c is not None:
+                        price[s] = c
+            except Exception as e:
+                print("не удалось получить цены для части монет:", e)
 
     stage1 = [
         (s, b, cap) for s, b, cap in cands
