@@ -4,40 +4,52 @@ import requests
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-PRICE_MIN, PRICE_MAX = 0.5, 3.0
-OI_MIN, OI_MAX = 3.0, 12.0
+PRICE_MIN = 0.5
+PRICE_MAX = 3.0
+OI_MIN = 3.0
+OI_MAX = 12.0
 
 def send_telegram(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Ошибка: Токен или Chat ID не заданы в секретах!")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
+        print("Ответ Telegram API:", response.text)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
 def check_binance_futures():
-    ticker_url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     try:
-        response = requests.get(ticker_url, timeout=10)
+        response = requests.get(url, timeout=10)
         data = response.json()
     except Exception as e:
         print("Ошибка запроса к Binance:", e)
+        send_telegram(f"⚠️ **Ошибка подключения к Binance:** `{e}`")
         return
-    
-    if not isinstance(data, list):
-        return
-        
-    for item in data:
+
+    symbols_checked = 0
+    signals_count = 0
+
+    for item in data.get('symbols', []):
         symbol = item['symbol']
         if not symbol.endswith('USDT'):
             continue
-            
+        
+        symbols_checked += 1
         try:
-            klines_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1h&limit=5"
+            klines_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=4h&limit=2"
             klines = requests.get(klines_url, timeout=5).json()
-            if not isinstance(klines, list) or len(klines) < 5:
+            if not isinstance(klines, list) or len(klines) < 2:
                 continue
-                
+
             price_4h_ago = float(klines[0][4])
             price_now = float(klines[-1][4])
             price_change_4h = ((price_now - price_4h_ago) / price_4h_ago) * 100
@@ -45,11 +57,11 @@ def check_binance_futures():
             if not (PRICE_MIN <= price_change_4h <= PRICE_MAX):
                 continue
 
-            oi_hist_url = f"https://fapi.binance.com/fapi/v1/openInterestHist?symbol={symbol}&period=1h&limit=5"
+            oi_hist_url = f"https://fapi.binance.com/fapi/v1/openInterestHist?symbol={symbol}&period=4h&limit=2"
             oi_data = requests.get(oi_hist_url, timeout=5).json()
-            if not isinstance(oi_data, list) or len(oi_data) < 5:
+            if not isinstance(oi_data, list) or len(oi_data) < 2:
                 continue
-                
+
             oi_4h_ago = float(oi_data[0]['sumOpenInterest'])
             oi_now = float(oi_data[-1]['sumOpenInterest'])
             oi_change_4h = ((oi_now - oi_4h_ago) / oi_4h_ago) * 100
@@ -57,15 +69,19 @@ def check_binance_futures():
             if not (OI_MIN <= oi_change_4h <= OI_MAX):
                 continue
 
+            signals_count += 1
             msg = (
                 f"🎯 *Сигнал по монете!*\n\n"
-                f"📌 *Тикер:* `{symbol}`\n"
-                f"📈 *Цена (4h):* +{price_change_4h:.2f}%\n"
-                f"📊 *OI (4h):* +{oi_change_4h:.2f}%"
+                f"📈 *Тикер:* `{symbol}`\n"
+                f"📊 *Цена (4h):* `+{price_change_4h:.2f}%`\n"
+                f"📊 *OI (4h):* `+{oi_change_4h:.2f}%`"
             )
             send_telegram(msg)
         except Exception:
             continue
+
+    # Временный отчет о проверке
+    send_telegram(f"🟢 **Бот успешно отработал!**\nПроверено монет: `{symbols_checked}`\nНайдено сигналов: `{signals_count}`")
 
 if __name__ == "__main__":
     check_binance_futures()
