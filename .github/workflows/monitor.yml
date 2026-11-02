@@ -31,5 +31,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          if [ -f state.json ]; then git add state.json; fi
+          for f in state.json signals.csv repeats.csv; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
           git diff --cached --quiet || (git commit -m "update state" && git pull --rebase && git push)
