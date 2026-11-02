@@ -26,6 +26,7 @@ WINDOW_H = 72        # сколько часов длится одно «окн�
 TP_PCT = 4.0         # цель, % от цены входа
 LEVELS = (3, 5, 10, 20)  # отметки падения, % (просто справочно)
 BTC = "BTCUSDT_PERP.A"
+CANDLE_S = 300       # длина свечи для цены входа и проверки (5 минут)
 
 ST_OPEN = "в процессе"
 ST_TP = "тейк"
@@ -36,7 +37,7 @@ ST_NODATA = "нет данных"
 SIGNAL_COLS = [
     "signal_id", "symbol", "coin", "entry_time_utc", "entry_ts",
     "weekday", "hour_utc",
-    "entry_price", "price_chg_4h_pct", "price_chg_24h_pct",
+    "entry_price", "price_lag_min", "price_chg_4h_pct", "price_chg_24h_pct",
     "oi_usd_now", "oi_usd_4h_ago", "oi_chg_4h_pct",
     "volume_usd_4h", "volume_usd_24h", "funding_pct", "mcap_usd",
     "btc_chg_4h_pct", "btc_chg_24h_pct", "coins_in_range",
@@ -304,6 +305,10 @@ def log_hits(hits, n_in_range):
         s, b, cap = h["symbol"], h["coin"], h["cap"]
         c = sorted(mk.get(s, []), key=lambda x: x["t"])
         price_now = c[-1]["c"] if c else None
+        # цена входа это закрытие последней свечи, поэтому и время входа
+        # считаем от конца этой свечи: цена и время всегда совпадают
+        entry_ts = c[-1]["t"] + CANDLE_S if c else now
+        lag_min = round((now - entry_ts) / 60, 1) if c else ""
         base_line = (
             f"{b}USDT: цена {h['price_chg']:+.2f}% | OI {h['oi_chg']:+.2f}% "
             f"| кап ${cap/1e6:.0f}M"
@@ -328,9 +333,9 @@ def log_hits(hits, n_in_range):
             funding = fh[-1]["c"] if fh else None
             row = {
                 "signal_id": f"{b}_{now}", "symbol": s, "coin": b,
-                "entry_time_utc": ts_str(now), "entry_ts": now,
+                "entry_time_utc": ts_str(entry_ts), "entry_ts": entry_ts,
                 "weekday": dt.weekday(), "hour_utc": dt.hour,
-                "entry_price": sig(price_now),
+                "entry_price": sig(price_now), "price_lag_min": lag_min,
                 "price_chg_4h_pct": rnd(h["price_chg"]),
                 "price_chg_24h_pct": rnd(level_pair(c, 24)[2]),
                 "oi_usd_now": sig(h["oi_now"], 8),
