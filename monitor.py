@@ -52,6 +52,35 @@ REPEAT_COLS = [
 ]
 
 
+# Русские заголовки столбцов: в файл пишутся они, внутри кода работаем с английскими ключами
+SIGNAL_RU = {
+    "signal_id": "ID сигнала", "symbol": "Пара", "coin": "Монета",
+    "entry_time_utc": "Вход (UTC)", "entry_ts": "Метка времени",
+    "weekday": "День недели (0=пн)", "hour_utc": "Час (UTC)",
+    "entry_price": "Цена входа", "price_lag_min": "Отставание цены (мин)",
+    "price_chg_4h_pct": "Цена 4ч (%)", "price_chg_24h_pct": "Цена 24ч (%)",
+    "oi_usd_now": "ОИ сейчас ($)", "oi_usd_4h_ago": "ОИ 4ч назад ($)",
+    "oi_chg_4h_pct": "ОИ 4ч (%)",
+    "volume_usd_4h": "Объём 4ч ($)", "volume_usd_24h": "Объём 24ч ($)",
+    "funding_pct": "Фандинг (%)", "mcap_usd": "Капитализация ($)",
+    "btc_chg_4h_pct": "BTC 4ч (%)", "btc_chg_24h_pct": "BTC 24ч (%)",
+    "coins_in_range": "Монет в диапазоне",
+    "repeats": "Повторов", "last_repeat_utc": "Посл. повтор (UTC)",
+    "status": "Статус", "hours_to_tp": "До тейка (ч)",
+    "max_drawdown_pct": "Макс. просадка (%)", "max_gain_pct": "Макс. рост (%)",
+    "h_to_m3": "До -3% (ч)", "h_to_m5": "До -5% (ч)",
+    "h_to_m10": "До -10% (ч)", "h_to_m20": "До -20% (ч)",
+    "price_at_end_pct": "Цена в конце (%)", "checked_utc": "Проверено (UTC)",
+}
+REPEAT_RU = {
+    "signal_id": "ID сигнала", "symbol": "Пара", "coin": "Монета",
+    "time_utc": "Время (UTC)", "ts": "Метка времени", "repeat_no": "№ повтора",
+    "price": "Цена", "price_chg_4h_pct": "Цена 4ч (%)",
+    "oi_usd_now": "ОИ сейчас ($)", "oi_chg_4h_pct": "ОИ 4ч (%)",
+    "mcap_usd": "Капитализация ($)",
+}
+
+
 def load_state():
     try:
         with open(STATE_FILE) as f:
@@ -238,30 +267,38 @@ def vol_usd(h, hours):
     return sum((c.get("v") or 0) * (c.get("c") or 0) for c in h if c["t"] > t0)
 
 
-def load_signals():
-    if not os.path.exists(SIGNALS_FILE):
+def _read_csv(path, ru):
+    """Читает csv; русские заголовки превращает обратно в английские ключи
+    (старые файлы с английскими заголовками тоже читаются)."""
+    if not os.path.exists(path):
         return []
-    with open(SIGNALS_FILE, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+    back = {v: k for k, v in ru.items()}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return [{back.get(k, k): v for k, v in row.items()}
+                for row in csv.DictReader(f)]
+
+
+def _write_csv(path, cols, ru, rows):
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow([ru[c] for c in cols])
+        for r in rows:
+            w.writerow([r.get(c, "") for c in cols])
+
+
+def load_signals():
+    return _read_csv(SIGNALS_FILE, SIGNAL_RU)
 
 
 def save_signals(rows):
-    with open(SIGNALS_FILE, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=SIGNAL_COLS, restval="", extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
+    _write_csv(SIGNALS_FILE, SIGNAL_COLS, SIGNAL_RU, rows)
 
 
 def append_repeats(rows):
     if not rows:
         return
-    new = not os.path.exists(REPEATS_FILE)
-    with open(REPEATS_FILE, "w" if new else "a", newline="",
-              encoding="utf-8-sig" if new else "utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=REPEAT_COLS, restval="", extrasaction="ignore")
-        if new:
-            w.writeheader()
-        w.writerows(rows)
+    old = _read_csv(REPEATS_FILE, REPEAT_RU)
+    _write_csv(REPEATS_FILE, REPEAT_COLS, REPEAT_RU, old + rows)
 
 
 def log_hits(hits, n_in_range):
