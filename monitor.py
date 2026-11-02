@@ -44,7 +44,9 @@ SIGNAL_COLS = [
     "repeats", "last_repeat_utc",
     "status", "hours_to_tp", "max_drawdown_pct", "max_gain_pct",
     "h_to_m3", "h_to_m5", "h_to_m10", "h_to_m20",
-    "price_at_end_pct", "checked_utc",
+    "price_at_end_pct",
+    "oi_after_4h_pct", "oi_after_12h_pct", "oi_after_24h_pct",
+    "checked_utc",
 ]
 REPEAT_COLS = [
     "signal_id", "symbol", "coin", "time_utc", "ts", "repeat_no",
@@ -70,7 +72,10 @@ SIGNAL_RU = {
     "max_drawdown_pct": "Макс. просадка (%)", "max_gain_pct": "Макс. рост (%)",
     "h_to_m3": "До -3% (ч)", "h_to_m5": "До -5% (ч)",
     "h_to_m10": "До -10% (ч)", "h_to_m20": "До -20% (ч)",
-    "price_at_end_pct": "Цена в конце (%)", "checked_utc": "Проверено (UTC)",
+    "price_at_end_pct": "Цена в конце (%)",
+    "oi_after_4h_pct": "ОИ через 4ч (%)", "oi_after_12h_pct": "ОИ через 12ч (%)",
+    "oi_after_24h_pct": "ОИ через 24ч (%)",
+    "checked_utc": "Проверено (UTC)",
 }
 REPEAT_RU = {
     "signal_id": "ID сигнала", "symbol": "Пара", "coin": "Монета",
