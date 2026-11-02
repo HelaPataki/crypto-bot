@@ -77,6 +77,44 @@ def num(x):
         return None
 
 
+OI_KEY = {4: "oi_after_4h_pct", 12: "oi_after_12h_pct", 24: "oi_after_24h_pct"}
+
+
+def due_horizons(row, now):
+    """Для каких горизонтов (4/12/24ч) пора записать изменение ОИ после входа.
+    Если сделка к этому времени уже закрылась тейком, ячейка остаётся пустой."""
+    try:
+        t0 = int(row["entry_ts"])
+        oi0 = float(row["oi_usd_now"])
+    except (ValueError, KeyError, TypeError):
+        return []
+    if oi0 <= 0:
+        return []
+    age_h = (now - t0) / 3600
+    if age_h > 120:
+        return []
+    tp_h = num(row.get("hours_to_tp"))
+    return [h for h, key in OI_KEY.items()
+            if row.get(key) in (None, "") and age_h >= h + 0.5
+            and (tp_h is None or h < tp_h)]
+
+
+def fill_oi(row, candles, horizons):
+    """% изменения ОИ относительно входа через 4/12/24 часа после входа."""
+    t0 = int(row["entry_ts"])
+    oi0 = float(row["oi_usd_now"])
+    cs = [c for c in candles if c.get("c")]
+    upd = {}
+    if not cs:
+        return upd
+    for h in horizons:
+        target = t0 + h * 3600
+        nearest = min(cs, key=lambda c: abs(c["t"] - target))
+        if abs(nearest["t"] - target) <= 1800:
+            upd[OI_KEY[h]] = round((nearest["c"] / oi0 - 1) * 100, 2)
+    return upd
+
+
 def summarize(rows, now, days=7):
     """Текст недельной сводки."""
     week = []
@@ -116,6 +154,7 @@ def main():
     now = int(time.time())
     rows = load_signals()
 
+    changed = False
     pending = [r for r in rows if (r.get("status") or ST_OPEN) == ST_OPEN]
     print("сигналов в обработке:", len(pending))
     if pending:
@@ -136,6 +175,28 @@ def main():
             r.update(evaluate(r, hist.get(r["symbol"], []), now))
             if not r.get("status"):
                 r["status"] = ST_OPEN
+        changed = True
+
+    # ОИ через 4/12/24 часа после входа
+    need = [(r, d) for r in rows for d in [due_horizons(r, now)] if d]
+    print("сигналов, у которых пора записать ОИ после входа:", len(need))
+    if need:
+        syms = sorted({r["symbol"] for r, _ in need})
+        age_max = max((now - int(r["entry_ts"])) / 3600 for r, _ in need)
+        try:
+            oi_hist = history(
+                "open-interest-history", syms, interval="15min",
+                hours=min(age_max + 0.5, 125), extra={"convert_to_usd": "true"},
+            )
+        except Exception as e:
+            print("не получил ОИ после входа:", e)
+            oi_hist = {}
+        for r, d in need:
+            upd = fill_oi(r, oi_hist.get(r["symbol"], []), d)
+            if upd:
+                r.update(upd)
+                changed = True
+    if changed:
         save_signals(rows)
 
     is_monday = datetime.fromtimestamp(now, timezone.utc).weekday() == 0
