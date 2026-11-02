@@ -1,13 +1,16 @@
 import os
+import csv
 import json
 import time
 import requests
+from datetime import datetime, timezone
 
 TOKEN = os.environ["TG_TOKEN"]
 CHAT = os.environ["TG_CHAT"]
 KEY = os.environ["COINALYZE_KEY"]
 
-MCAP_MIN = 50_000_000
+# ---------- фильтры (как раньше, изменён только порог капитализации) ----------
+MCAP_MIN = 20_000_000
 PRICE_MIN, PRICE_MAX = 0.5, 3.0
 OI_MIN, OI_MAX = 3.0, 12.0
 
@@ -15,6 +18,37 @@ CZ = "https://api.coinalyze.net/v1"
 SPOT = "https://data-api.binance.vision"
 PAUSE = 2.0  # лимит Coinalyze: 40 запросов в минуту (берём с запасом)
 STATE_FILE = "state.json"
+
+# ---------- запись сигналов ----------
+SIGNALS_FILE = "signals.csv"
+REPEATS_FILE = "repeats.csv"
+WINDOW_H = 72        # сколько часов длится одно «окно» наблюдения за монетой
+TP_PCT = 4.0         # цель, % от цены входа
+LEVELS = (3, 5, 10, 20)  # отметки падения, % (просто справочно)
+BTC = "BTCUSDT_PERP.A"
+
+ST_OPEN = "в процессе"
+ST_TP = "тейк"
+ST_FAIL = "не закрыт 72ч"
+ST_NOPRICE = "нет цены входа"
+ST_NODATA = "нет данных"
+
+SIGNAL_COLS = [
+    "signal_id", "symbol", "coin", "entry_time_utc", "entry_ts",
+    "weekday", "hour_utc",
+    "entry_price", "price_chg_4h_pct", "price_chg_24h_pct",
+    "oi_usd_now", "oi_usd_4h_ago", "oi_chg_4h_pct",
+    "volume_usd_4h", "volume_usd_24h", "funding_pct", "mcap_usd",
+    "btc_chg_4h_pct", "btc_chg_24h_pct", "coins_in_range",
+    "repeats", "last_repeat_utc",
+    "status", "hours_to_tp", "max_drawdown_pct", "max_gain_pct",
+    "h_to_m3", "h_to_m5", "h_to_m10", "h_to_m20",
+    "price_at_end_pct", "checked_utc",
+]
+REPEAT_COLS = [
+    "signal_id", "symbol", "coin", "time_utc", "ts", "repeat_no",
+    "price", "price_chg_4h_pct", "oi_usd_now", "oi_chg_4h_pct", "mcap_usd",
+]
 
 
 def load_state():
@@ -71,7 +105,7 @@ def cz(path, **params):
 
 def mcaps():
     res = {}
-    for page in range(1, 6):
+    for page in range(1, 9):
         data = get_json(
             "https://api.coingecko.com/api/v3/coins/markets",
             vs_currency="usd", order="market_cap_desc",
@@ -81,6 +115,9 @@ def mcaps():
             s = c["symbol"].upper()
             if c.get("market_cap") and s not in res:
                 res[s] = c["market_cap"]
+        # список идёт по убыванию капитализации: дальше порога смотреть незачем
+        if not data or (data[-1].get("market_cap") or 0) < MCAP_MIN:
+            break
         time.sleep(3)
     return res
 
@@ -159,6 +196,163 @@ def spot_price_changes(bases):
     return out
 
 
+# =====================================================================
+#   Запись сигналов в таблицы
+# =====================================================================
+
+def ts_str(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def sig(x, digits=6):
+    """Число с разумным числом значащих цифр (для цен), пустая строка если нет."""
+    if x is None:
+        return ""
+    return float(f"{x:.{digits}g}")
+
+
+def rnd(x, n=2):
+    return "" if x is None else round(x, n)
+
+
+def level_pair(h, hours):
+    """(последнее значение, значение 'hours' часов назад, % изменения)."""
+    if len(h) < 2:
+        return None, None, None
+    h = sorted(h, key=lambda x: x["t"])
+    last = h[-1]
+    target = last["t"] - hours * 3600
+    ref = min(h, key=lambda x: abs(x["t"] - target))
+    if ref is last or not ref["c"] or abs(ref["t"] - target) > 1800:
+        return last["c"], None, None
+    return last["c"], ref["c"], (last["c"] / ref["c"] - 1) * 100
+
+
+def vol_usd(h, hours):
+    """Примерный объём в $ за последние 'hours' часов: сумма (объём в монетах * цена закрытия)."""
+    if not h:
+        return None
+    h = sorted(h, key=lambda x: x["t"])
+    t0 = h[-1]["t"] - hours * 3600
+    return sum((c.get("v") or 0) * (c.get("c") or 0) for c in h if c["t"] > t0)
+
+
+def load_signals():
+    if not os.path.exists(SIGNALS_FILE):
+        return []
+    with open(SIGNALS_FILE, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+def save_signals(rows):
+    with open(SIGNALS_FILE, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=SIGNAL_COLS, restval="", extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def append_repeats(rows):
+    if not rows:
+        return
+    new = not os.path.exists(REPEATS_FILE)
+    with open(REPEATS_FILE, "w" if new else "a", newline="",
+              encoding="utf-8-sig" if new else "utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=REPEAT_COLS, restval="", extrasaction="ignore")
+        if new:
+            w.writeheader()
+        w.writerows(rows)
+
+
+def log_hits(hits, n_in_range):
+    """Записывает сигналы. Возвращает (строки для новых сигналов, строки для повторов)."""
+    now = int(time.time())
+    rows = load_signals()
+
+    # у каких монет окно наблюдения ещё идёт (последняя строка по монете)
+    active = {}
+    for r in rows:
+        try:
+            ts = int(r["entry_ts"])
+        except (ValueError, KeyError):
+            continue
+        if now - ts < WINDOW_H * 3600:
+            active[r["symbol"]] = r
+
+    syms = list(dict.fromkeys([h["symbol"] for h in hits] + [BTC]))
+    mk = {}
+    try:
+        mk = history("ohlcv-history", syms, hours=25.5)
+    except Exception as e:
+        print("не получил свечи для записи сигналов:", e)
+
+    fund = {}
+    fund_syms = [h["symbol"] for h in hits if h["symbol"] not in active]
+    if fund_syms:
+        try:
+            fund = history("funding-rate-history", fund_syms, interval="1hour", hours=12)
+        except Exception as e:
+            print("не получил funding:", e)
+
+    btc = mk.get(BTC, [])
+    btc4 = level_pair(btc, 4)[2]
+    btc24 = level_pair(btc, 24)[2]
+
+    dt = datetime.fromtimestamp(now, timezone.utc)
+    new_lines, repeat_lines, repeat_rows = [], [], []
+
+    for h in hits:
+        s, b, cap = h["symbol"], h["coin"], h["cap"]
+        c = sorted(mk.get(s, []), key=lambda x: x["t"])
+        price_now = c[-1]["c"] if c else None
+        base_line = (
+            f"{b}USDT: цена {h['price_chg']:+.2f}% | OI {h['oi_chg']:+.2f}% "
+            f"| кап ${cap/1e6:.0f}M"
+        )
+        if s in active:
+            r = active[s]
+            n = int(r.get("repeats") or 0) + 1
+            r["repeats"] = n
+            r["last_repeat_utc"] = ts_str(now)
+            repeat_rows.append({
+                "signal_id": r["signal_id"], "symbol": s, "coin": b,
+                "time_utc": ts_str(now), "ts": now, "repeat_no": n,
+                "price": sig(price_now), "price_chg_4h_pct": rnd(h["price_chg"]),
+                "oi_usd_now": sig(h["oi_now"], 8), "oi_chg_4h_pct": rnd(h["oi_chg"]),
+                "mcap_usd": int(cap),
+            })
+            repeat_lines.append(
+                f"{base_line} | повторный вход №{n}, первый был {r['entry_time_utc']} UTC"
+            )
+        else:
+            fh = sorted(fund.get(s, []), key=lambda x: x["t"])
+            funding = fh[-1]["c"] if fh else None
+            row = {
+                "signal_id": f"{b}_{now}", "symbol": s, "coin": b,
+                "entry_time_utc": ts_str(now), "entry_ts": now,
+                "weekday": dt.weekday(), "hour_utc": dt.hour,
+                "entry_price": sig(price_now),
+                "price_chg_4h_pct": rnd(h["price_chg"]),
+                "price_chg_24h_pct": rnd(level_pair(c, 24)[2]),
+                "oi_usd_now": sig(h["oi_now"], 8),
+                "oi_usd_4h_ago": sig(h["oi_ref"], 8),
+                "oi_chg_4h_pct": rnd(h["oi_chg"]),
+                "volume_usd_4h": rnd(vol_usd(c, 4), 0),
+                "volume_usd_24h": rnd(vol_usd(c, 24), 0),
+                "funding_pct": sig(funding, 6),
+                "mcap_usd": int(cap),
+                "btc_chg_4h_pct": rnd(btc4), "btc_chg_24h_pct": rnd(btc24),
+                "coins_in_range": n_in_range,
+                "repeats": 0, "last_repeat_utc": "",
+                "status": ST_OPEN,
+            }
+            rows.append(row)
+            new_lines.append(base_line)
+
+    save_signals(rows)
+    append_repeats(repeat_rows)
+    return new_lines, repeat_lines
+
+
 def main():
     if os.environ.get("TEST") == "1":
         tg("✅ Тест: бот на связи")
@@ -230,7 +424,7 @@ def main():
         return
 
     prev = load_state()  # монеты, которые уже были в диапазоне в прошлый раз
-    now_in, new_hits = set(), []
+    now_in, hits = set(), []
     for s, b, cap in stage1:
         d_oi = change(oi_hist.get(s, []))
         if d_oi is None:
@@ -241,13 +435,33 @@ def main():
         if OI_MIN <= d_oi <= OI_MAX:
             now_in.add(s)
             if s not in prev:
-                new_hits.append(
-                    f"{b}USDT: цена {price[s]:+.2f}% | OI {d_oi:+.2f}% | кап ${cap/1e6:.0f}M"
-                )
+                oi_now, oi_ref, _ = level_pair(oi_hist.get(s, []), 4)
+                hits.append({
+                    "symbol": s, "coin": b, "cap": cap,
+                    "price_chg": price[s], "oi_chg": d_oi,
+                    "oi_now": oi_now, "oi_ref": oi_ref,
+                })
     save_state(now_in)
-    print("в диапазоне:", len(now_in), "новых сигналов:", len(new_hits))
-    if new_hits:
-        tg("🔔 Монета вошла в диапазон (последние 4ч):\n" + "\n".join(new_hits))
+    print("в диапазоне:", len(now_in), "новых входов:", len(hits))
+    if not hits:
+        return
+
+    # 3) запись в таблицы; если что-то пошло не так, алерт всё равно отправляем
+    try:
+        new_lines, repeat_lines = log_hits(hits, len(now_in))
+    except Exception as e:
+        print("ошибка записи сигналов:", e)
+        tg(f"⚠️ Сигнал не записан в таблицу:\n{e}")
+        new_lines = [
+            f"{h['coin']}USDT: цена {h['price_chg']:+.2f}% | OI {h['oi_chg']:+.2f}% "
+            f"| кап ${h['cap']/1e6:.0f}M" for h in hits
+        ]
+        repeat_lines = []
+
+    if new_lines:
+        tg("🔔 Монета вошла в диапазон (последние 4ч):\n" + "\n".join(new_lines))
+    if repeat_lines:
+        tg("🔁 Повторный вход (окно 72ч по монете уже идёт):\n" + "\n".join(repeat_lines))
 
 
 if __name__ == "__main__":
