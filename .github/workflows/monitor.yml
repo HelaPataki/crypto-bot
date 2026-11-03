@@ -28,6 +28,7 @@ jobs:
           COINALYZE_KEY: ${{ secrets.COINALYZE_KEY }}
           TEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
       - name: Save state
+        if: ${{ !cancelled() }}
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
