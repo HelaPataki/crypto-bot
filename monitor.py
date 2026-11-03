@@ -100,12 +100,24 @@ def save_state(symbols):
 
 
 def tg(text):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT, "text": text[:4000]},
-        timeout=20,
-    )
-    print("telegram:", r.status_code, r.text[:150])
+    """Отправка в Telegram: 3 попытки; при сбое сети бот не падает, а идёт дальше."""
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                data={"chat_id": CHAT, "text": text[:4000]},
+                timeout=30,
+            )
+            print("telegram:", r.status_code, r.text[:150])
+            if r.status_code == 200:
+                return True
+            if r.status_code != 429 and 400 <= r.status_code < 500:
+                return False  # ошибка в самом запросе, повторять бесполезно
+        except requests.RequestException as e:
+            print(f"telegram: ошибка отправки (попытка {attempt + 1}):", e)
+        time.sleep(5 * (attempt + 1))
+    print("telegram: сообщение не отправлено")
+    return False
 
 
 def get_json(url, **params):
